@@ -13,42 +13,112 @@ jobs:
     steps:
       # 1. checkout code
       - uses: actions/checkout@v3
-
-      # 2. QEMU + Buildx setup
-      - uses: docker/setup-qemu-action@v2
-      - uses: docker/setup-buildx-action@v2
-
-      # 3. restore build cache
-      - name: Restore buildx cache
+      
+      # 2. Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      # 3. Cache Docker layers
+      - name: Cache Docker layers
         uses: actions/cache@v3
-        id: cache
         with:
           path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-cache
-
-      # 4. build with cache-from/to
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+      
+      # 4. Build Docker image with tests
       - name: Build Docker image
-        run: |
-          docker buildx create --use
-          docker buildx build \
-            --cache-from=type=local,src=/tmp/.buildx-cache \
-            --cache-to=type=local,dest=/tmp/.buildx-cache,mode=max \
-            --load \
-            -f Dockerfile \
-            -t my-nl2sql-app:ci .
-
-      # 5. save cache if miss
-      - name: Save buildx cache
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache@v3
+        uses: docker/build-push-action@v4
         with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-cache
-
-      # 6. run pytest inside container, with PYTHONPATH so imports work
-      - name: Run tests in container
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: my-nl2sql-app:test
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+      
+      # 5. Move cache
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+      
+      # 6. Run tests inside the container with proper paths
+      - name: Run tests
         run: |
           docker run --rm \
-            -e PYTHONPATH=/app/src:/app \
-            my-nl2sql-app:ci \
-            pytest --maxfail=1 --disable-warnings -q
+            -v ${{ github.workspace }}/tests:/app/tests \
+            -e PYTHONPATH=/app:/app/src \
+            my-nl2sql-app:test \
+            pytest /app/tests -v
+
+      # 7. Run a specific test file if the above fails
+      - name: Run individual test files if needed
+        if: failure()
+        run: |
+          for test_file in tests/test_*.py; do
+            echo "Running $test_file..."
+            docker run --rm \
+              -v ${{ github.workspace }}/tests:/app/tests \
+              -e PYTHONPATH=/app:/app/src \
+              my-nl2sql-app:test \
+              pytest /app/tests/$(basename $test_file) -v
+          done
+
+
+# # .github/workflows/ci.yml
+# name: CI
+
+# on:
+#   push:
+#     branches: [ main ]
+#   pull_request:
+#     branches: [ main ]
+
+# jobs:
+#   build-and-test:
+#     runs-on: ubuntu-latest
+#     steps:
+#       # 1. checkout code
+#       - uses: actions/checkout@v3
+
+#       # 2. QEMU + Buildx setup
+#       - uses: docker/setup-qemu-action@v2
+#       - uses: docker/setup-buildx-action@v2
+
+#       # 3. restore build cache
+#       - name: Restore buildx cache
+#         uses: actions/cache@v3
+#         id: cache
+#         with:
+#           path: /tmp/.buildx-cache
+#           key: ${{ runner.os }}-buildx-cache
+
+#       # 4. build with cache-from/to
+#       - name: Build Docker image
+#         run: |
+#           docker buildx create --use
+#           docker buildx build \
+#             --cache-from=type=local,src=/tmp/.buildx-cache \
+#             --cache-to=type=local,dest=/tmp/.buildx-cache,mode=max \
+#             --load \
+#             -f Dockerfile \
+#             -t my-nl2sql-app:ci .
+
+#       # 5. save cache if miss
+#       - name: Save buildx cache
+#         if: steps.cache.outputs.cache-hit != 'true'
+#         uses: actions/cache@v3
+#         with:
+#           path: /tmp/.buildx-cache
+#           key: ${{ runner.os }}-buildx-cache
+
+#       # 6. run pytest inside container, with PYTHONPATH so imports work
+#       - name: Run tests in container
+#         run: |
+#           docker run --rm \
+#             -e PYTHONPATH=/app/src:/app \
+#             my-nl2sql-app:ci \
+#             pytest --maxfail=1 --disable-warnings -q
